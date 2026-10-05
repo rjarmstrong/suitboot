@@ -1,0 +1,21 @@
+[package]
+name = "suitboot"
+version = "0.1.0"
+edition = "2024"
+description = "Erase a USB stick on macOS and write a Linux ISO for ThinkPad boot"
+license = "MIT"
+publish = false
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+dialoguer = "0.12.0"
+owo-colors = "4.4.0"
+plist = "1.10.1"
+serde = { version = "1.0.229", features = ["derive"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "warn"
