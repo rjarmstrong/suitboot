@@ -9,10 +9,9 @@ Plug in a USB stick, run `suitboot`, pick an ISO from downloads. SuitBoot does t
 
 ## What you get
 
-- **Fast setup.** Pick the stick and the ISO. No Disk Utility, no terminal commands.
+- **Fast setup.** Pick the stick and the ISO. No Disk Utility.
 - **Safe targets.** Internal disks, disk images, and the Mac’s boot disk are refused.
 - **A finished stick.** SuitBoot writes the ISO, reads it back, then ejects it.
-- **ThinkPad ready.** The USB is prepared to start the laptop.
 
 ## One dialog to ignore
 
@@ -21,8 +20,8 @@ macOS will say the disk is not readable.
 - **Click Ignore.**
 - **Do not** click Eject or Initialize.
 
-## On the ThinkPad
+## On the target machine
 
-- Unplug the USB and plug it into the laptop.
+- Plug-in USB
 - Power on and tap **F12**.
 - Choose the USB.
