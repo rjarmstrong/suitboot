@@ -1,6 +1,6 @@
 <h1>SuitBoot</h1>
 
-<img width="290" height="299" alt="image" src="https://github.com/user-attachments/assets/b46cf117-aa26-41e9-a5fa-3fac2d4b9d45" />
+<img width="150" height="150" alt="image" src="https://github.com/user-attachments/assets/b46cf117-aa26-41e9-a5fa-3fac2d4b9d45" />
 
 
 <h2>Quick, easy way to make a Linux boot disk on your Mac.</h2>
