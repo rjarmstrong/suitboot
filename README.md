@@ -5,7 +5,13 @@
 
 <h2>Quick, easy way to make a Linux boot disk on your Mac.</h2>
 
-Plug in a USB stick, run `suitboot`, pick an ISO from downloads. SuitBoot does the rest.
+Plug in a USB stick, run:
+
+```sh
+$ suitboot
+```
+
+pick an ISO from downloads. SuitBoot does the rest.
 
 ## What you get
 
