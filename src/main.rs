@@ -9,13 +9,13 @@ mod iso;
 mod ui;
 mod util;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use dialoguer::{Select, theme::ColorfulTheme};
 use owo_colors::OwoColorize;
 
 use crate::disk::{Disk, list_usb_candidates, require_candidate};
 use crate::iso::{IsoImage, downloads_dir, list_download_isos, load_iso};
+use crate::ui::Ui;
 use crate::util::format_bytes;
 
 #[derive(Parser)]
@@ -57,84 +57,66 @@ fn run() -> Result<()> {
 }
 
 fn list_disks() -> Result<()> {
-    ui::banner();
-    ui::step("USB");
-    ui::point("Looking for sticks");
+    println!("{}", "SuitBoot".bold());
     let disks = list_usb_candidates()?;
     if disks.is_empty() {
-        ui::point("None found");
-        ui::point("You: plug one in, then run suitboot list again");
+        println!("No USB stick found. Plug one in, then run suitboot list again.");
         return Ok(());
     }
     for disk in &disks {
-        print_disk_line(disk);
+        if disk.is_large() {
+            println!("  {}   large", disk.summary());
+        } else {
+            println!("  {}", disk.summary());
+        }
     }
     Ok(())
 }
 
 fn flash_flow() -> Result<()> {
-    ui::banner();
-    ui::step("Start");
-    ui::point("Pick a USB, then an ISO");
-    ui::point("SuitBoot erases the stick and writes it");
-    ui::point("You: arrow keys, then Enter");
+    let mut ui = Ui::open()?;
 
-    let disk = pick_target_device()?;
-    ui::step("Check");
-    ui::point(&format!("{id} still attached", id = disk.id));
+    let disk = pick_target_device(&mut ui)?;
+    ui.show(
+        "Checking the USB",
+        &[format!("{} is still the selected disk", disk.id)],
+    )?;
     let disk = require_candidate(&disk.id)?;
-    ui::done(&disk.summary());
 
-    let iso = pick_iso()?;
-    let iso_name = iso
-        .path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("iso");
-    ui::done(&format!(
-        "{iso_name}  ·  {}  ·  {}",
-        format_bytes(iso.size_bytes),
-        iso.display_kind()
-    ));
+    let iso = pick_iso(&mut ui)?;
 
-    confirm::confirm_erase(&disk, &iso)?;
-    flash::erase_and_write(&disk, &iso)?;
+    confirm::confirm_erase(&mut ui, &disk, &iso)?;
+    flash::erase_and_write(&mut ui, &disk, &iso)?;
 
-    ui::step("Ready");
-    ui::done("USB is bootable");
-    confirm::thinkpad_boot_notes();
+    ui.clear_progress()?;
+    ui.show("Ready", &confirm::thinkpad_notes())?;
+    ui.set_action(&["Unplug the USB".to_string()])?;
+    ui.wait_enter()?;
     Ok(())
 }
 
-fn pick_target_device() -> Result<Disk> {
+fn pick_target_device(ui: &mut Ui) -> Result<Disk> {
     loop {
-        ui::step("USB");
-        ui::point("Looking for sticks");
+        ui.show("Looking for USB sticks", &[])?;
         let disks = list_usb_candidates()?;
         if disks.is_empty() {
-            ui::point("None found");
-            ui::point("You: plug one in, then choose Rescan");
-            let again = Select::with_theme(&ColorfulTheme::default())
-                .with_prompt("Next")
-                .items(["Rescan for USB devices", "Cancel"])
-                .default(0)
-                .interact()?;
-            if again == 0 {
+            let choice = ui.choose(
+                "No USB stick found",
+                &["Internal disks stay hidden.".to_string()],
+                &["Rescan".to_string(), "Cancel".to_string()],
+            )?;
+            if choice == Some(0) {
                 continue;
             }
             bail!("aborted");
         }
 
         let mut labels: Vec<String> = disks.iter().map(device_menu_label).collect();
-        labels.push("Rescan for USB devices".to_string());
+        labels.push("Rescan".to_string());
         labels.push("Cancel".to_string());
-
-        let selection = Select::with_theme(&ColorfulTheme::default())
-            .with_prompt("Select the USB device to erase")
-            .items(&labels)
-            .default(0)
-            .interact()?;
-
+        let selection = ui
+            .choose("Pick the stick to erase", &[], &labels)?
+            .context_cancel()?;
         if selection == disks.len() {
             continue;
         }
@@ -145,21 +127,18 @@ fn pick_target_device() -> Result<Disk> {
     }
 }
 
-fn pick_iso() -> Result<IsoImage> {
+fn pick_iso(ui: &mut Ui) -> Result<IsoImage> {
     let downloads = downloads_dir()?;
     loop {
-        ui::step("ISO");
-        ui::point(&format!("{}", downloads.display()));
+        ui.show(&format!("Looking in {}", downloads.display()), &[])?;
         let files = list_download_isos()?;
         if files.is_empty() {
-            ui::point("No .iso or .img files");
-            ui::point("You: download one, then choose Rescan");
-            let again = Select::with_theme(&ColorfulTheme::default())
-                .with_prompt("Next")
-                .items(["Rescan Downloads", "Cancel"])
-                .default(0)
-                .interact()?;
-            if again == 0 {
+            let choice = ui.choose(
+                "No ISO found",
+                &[format!("Nothing in {}", downloads.display())],
+                &["Rescan".to_string(), "Cancel".to_string()],
+            )?;
+            if choice == Some(0) {
                 continue;
             }
             bail!("aborted");
@@ -173,18 +152,14 @@ fn pick_iso() -> Result<IsoImage> {
                     .file_name()
                     .and_then(|name| name.to_str())
                     .unwrap_or("unknown.iso");
-                format!("{}   {}", name, format_bytes(file.size_bytes))
+                format!("{}    {}", name, format_bytes(file.size_bytes))
             })
             .collect();
-        labels.push("Rescan Downloads".to_string());
+        labels.push("Rescan".to_string());
         labels.push("Cancel".to_string());
-
-        let selection = Select::with_theme(&ColorfulTheme::default())
-            .with_prompt(format!("Select an ISO from {}", downloads.display()))
-            .items(&labels)
-            .default(0)
-            .interact()?;
-
+        let selection = ui
+            .choose("Pick an ISO", &[downloads.display().to_string()], &labels)?
+            .context_cancel()?;
         if selection == files.len() {
             continue;
         }
@@ -192,12 +167,11 @@ fn pick_iso() -> Result<IsoImage> {
             bail!("aborted");
         }
 
-        ui::point("Checking it can boot from USB");
+        ui.show("Checking the file can boot from USB", &[])?;
         match load_iso(&files[selection].path) {
             Ok(iso) => return Ok(iso),
             Err(error) => {
-                ui::point(&format!("{error:#}"));
-                ui::point("You: pick another file, or Rescan");
+                ui.show(&format!("{error:#}"), &["Pick another file".to_string()])?;
             }
         }
     }
@@ -209,24 +183,21 @@ fn device_menu_label(disk: &Disk) -> String {
     } else {
         disk.volume_names.join(", ")
     };
-    let warning = if disk.is_large() {
-        "  ⚠ large — confirm carefully"
-    } else {
-        ""
-    };
+    let warning = if disk.is_large() { "    large" } else { "" };
     format!(
-        "{}   {}   {}   {}{warning}",
+        "{}    {}    {}    {volumes}{warning}",
         disk.id,
         disk.media_name,
         format_bytes(disk.size_bytes),
-        volumes
     )
 }
 
-fn print_disk_line(disk: &Disk) {
-    if disk.is_large() {
-        ui::alert(&format!("{}  ·  large", disk.summary()));
-    } else {
-        ui::point(&disk.summary());
+trait Cancel {
+    fn context_cancel(self) -> Result<usize>;
+}
+
+impl Cancel for Option<usize> {
+    fn context_cancel(self) -> Result<usize> {
+        self.context("aborted")
     }
 }

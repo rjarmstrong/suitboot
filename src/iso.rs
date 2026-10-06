@@ -80,7 +80,7 @@ pub fn list_isos_in(dir: &Path) -> Result<Vec<DownloadIso>> {
     let entries = fs::read_dir(dir).map_err(|error| {
         if error.kind() == ErrorKind::PermissionDenied {
             anyhow!(
-                "macOS blocked {}. You: System Settings → Privacy & Security → Files and Folders, allow your terminal, then run SuitBoot again.",
+                "macOS blocked {}. Allow this terminal under System Settings → Privacy & Security → Files and Folders, then run SuitBoot again.",
                 dir.display()
             )
         } else {

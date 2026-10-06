@@ -112,11 +112,7 @@ pub fn retry_with<T>(
     loop {
         match op(attempt) {
             Ok(value) => return Ok(value),
-            Err(error) if attempt < attempts => {
-                eprintln!(
-                    "{label} failed (attempt {attempt}/{attempts}): {error:#}. Retrying in {}s…",
-                    delay.as_secs()
-                );
+            Err(_) if attempt < attempts => {
                 thread::sleep(delay);
                 delay = (delay * 2).min(MAX_RETRY_DELAY);
                 attempt += 1;

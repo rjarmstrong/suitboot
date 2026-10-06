@@ -9,9 +9,10 @@ publish = false
 [dependencies]
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
-dialoguer = "0.12.0"
+crossterm = "0.29.0"
 owo-colors = "4.4.0"
 plist = "1.10.1"
+ratatui = "0.30.2"
 serde = { version = "1.0.229", features = ["derive"] }
 
 [lints.rust]

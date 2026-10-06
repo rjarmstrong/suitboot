@@ -12,7 +12,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use crate::cmd;
 use crate::disk::{self, Disk};
 use crate::iso::IsoImage;
-use crate::ui;
+use crate::ui::Ui;
 use crate::util::{format_bytes, format_duration};
 
 const SUDO: &str = "/usr/bin/sudo";
@@ -35,71 +35,80 @@ const UNMOUNT_ATTEMPTS: u32 = 5;
 const WRITE_ATTEMPTS: u32 = 3;
 const EJECT_ATTEMPTS: u32 = 3;
 
-pub fn erase_and_write(selected: &Disk, iso: &IsoImage) -> Result<()> {
-    ui::step("Write");
-    ui::point("Leave the USB plugged in");
-    ui::point("Keep the Mac awake");
-    ui::point("Unmount, write, flush, verify, eject");
-    ui::ignore_dialog();
-    ensure_sudo(true)?;
-    let disk = confirm_same_device(selected)?;
-    unmount(&disk)?;
-    write_image(&disk, iso)?;
-    flush();
-    verify_image(&disk, iso)?;
-    eject(&disk);
+pub fn erase_and_write(ui: &mut Ui, selected: &Disk, iso: &IsoImage) -> Result<()> {
+    ui.show(
+        "Write",
+        &[
+            "Leave the USB plugged in".to_string(),
+            "Keep the Mac awake".to_string(),
+        ],
+    )?;
+    ui.set_action(&[
+        "If macOS says the disk is unreadable, click Ignore".to_string(),
+        "Not Eject. Not Initialize.".to_string(),
+    ])?;
+    ensure_sudo(ui, true)?;
+    let disk = confirm_same_device(ui, selected)?;
+    unmount(ui, &disk)?;
+    write_image(ui, &disk, iso)?;
+    flush(ui)?;
+    verify_image(ui, &disk, iso)?;
+    eject(ui, &disk)?;
+    ui.clear_action()?;
     Ok(())
 }
 
 /// Asks for the admin password up front so a bad password can't be mistaken for a
 /// failed write, and so the later non-interactive `sudo -n` calls can't block on a prompt.
-fn ensure_sudo(announce: bool) -> Result<()> {
+fn ensure_sudo(ui: &mut Ui, announce: bool) -> Result<()> {
     let cached = cmd::run(SUDO, &["-n", "-v"], SUDO_CHECK_TIMEOUT)
         .map(|output| output.status.success())
         .unwrap_or(false);
     if cached {
         if announce {
-            ui::step("Password");
-            ui::point("macOS already granted access");
-            ui::point("Nothing to type");
+            ui.show("Password", &["macOS already granted access".to_string()])?;
         }
         return Ok(());
     }
-    ui::step("Password");
-    ui::point("You: type your Mac password");
-    ui::point("Needed to write the USB");
-    ui::point("Nothing is erased yet");
-    let status = Command::new(SUDO)
-        .args(["-v", "-p", "Password for %u: "])
-        .status()
-        .context("failed to run sudo")?;
+    ui.show("Password", &["Needed to write the USB".to_string()])?;
+    let status = ui.suspend(|| {
+        println!();
+        println!("  Password required to write the USB");
+        println!();
+        Command::new(SUDO).args(["-v", "-p", "Password: "]).status()
+    });
+    let status = status.context("failed to run sudo")?;
     if !status.success() {
         bail!(
             "the password was not accepted, or this account isn't an admin. Nothing was written."
         );
     }
-    ui::done("Password accepted");
+    ui.show("Password", &["Accepted".to_string()])?;
     Ok(())
 }
 
-fn confirm_same_device(selected: &Disk) -> Result<Disk> {
-    ui::step("Check");
-    ui::point(&format!(
-        "{}  ·  {}  ·  {}",
-        selected.id,
-        selected.media_name,
-        format_bytes(selected.size_bytes)
-    ));
+fn confirm_same_device(ui: &mut Ui, selected: &Disk) -> Result<Disk> {
+    ui.show(
+        "Checking the USB",
+        &[format!(
+            "{}  ·  {}  ·  {}",
+            selected.id,
+            selected.media_name,
+            format_bytes(selected.size_bytes)
+        )],
+    )?;
     let current = disk::require_candidate(&selected.id)?;
     disk::check_same_device(selected, &current)?;
     Ok(current)
 }
 
-fn unmount(disk: &Disk) -> Result<()> {
+fn unmount(ui: &mut Ui, disk: &Disk) -> Result<()> {
     let node = disk.node();
-    ui::step("Unmount");
-    ui::point(&node);
-    cmd::retry(&format!("Unmounting {node}"), UNMOUNT_ATTEMPTS, |_| {
+    ui.show("Unmount", std::slice::from_ref(&node))?;
+    cmd::retry(&format!("Unmounting {node}"), UNMOUNT_ATTEMPTS, |attempt| {
+        if attempt > 1 {
+            let _ = ui.show("Unmount", &[format!("{node}  ·  retry {attempt}")]);
+        }
         cmd::run_ok(DISKUTIL, &["unmountDisk", "force", &node], DISKUTIL_TIMEOUT)?;
         let still_mounted = disk::mounted_slices(&disk.id)?;
         if !still_mounted.is_empty() {
@@ -109,10 +118,10 @@ fn unmount(disk: &Disk) -> Result<()> {
     })
     .with_context(|| {
         format!(
-            "could not unmount {node}. Nothing was written. You: close Finder windows on the USB, then run SuitBoot again."
+            "could not unmount {node}. Nothing was written. Close Finder windows on the USB, then run SuitBoot again."
         )
     })?;
-    ui::done("Unmounted");
+    ui.show("Unmount", &["Unmounted".to_string()])?;
     Ok(())
 }
 
@@ -133,46 +142,52 @@ impl From<anyhow::Error> for WriteFailure {
     }
 }
 
-fn write_image(selected: &Disk, iso: &IsoImage) -> Result<()> {
+fn write_image(ui: &mut Ui, selected: &Disk, iso: &IsoImage) -> Result<()> {
     let mut disk = selected.clone();
     let mut attempt = 1;
     loop {
-        match write_once(&disk, iso) {
+        match write_once(ui, &disk, iso) {
             Ok(()) => return Ok(()),
             Err(WriteFailure::Busy) if attempt < WRITE_ATTEMPTS => {
                 attempt += 1;
-                ui::step("Retry");
-                ui::point("macOS remounted the USB");
-                ui::point(&format!(
-                    "SuitBoot will unmount and write again ({attempt}/{WRITE_ATTEMPTS})"
-                ));
+                ui.show(
+                    "Retry",
+                    &[format!(
+                        "macOS remounted the USB. Writing again ({attempt}/{WRITE_ATTEMPTS})"
+                    )],
+                )?;
                 thread::sleep(Duration::from_secs(2));
-                disk = confirm_same_device(&disk)?;
-                unmount(&disk)?;
+                disk = confirm_same_device(ui, &disk)?;
+                unmount(ui, &disk)?;
             }
             Err(WriteFailure::Busy) => bail!(
-                "macOS kept remounting the USB. It is not bootable. You: unplug it, plug it back in, and run SuitBoot again."
+                "macOS kept remounting the USB. It is not bootable. Unplug it, plug it back in, and run SuitBoot again."
             ),
             Err(WriteFailure::Gone { written }) if attempt < WRITE_ATTEMPTS => {
                 attempt += 1;
-                ui::step("Disconnected");
-                ui::point(&format!(
-                    "{} of {} written",
-                    format_bytes(written),
-                    format_bytes(iso.size_bytes)
-                ));
-                ui::point("Not bootable yet");
-                ui::point(&format!(
-                    "Waiting {}s. Leave it plugged in",
-                    RECONNECT_WAIT.as_secs()
-                ));
-                disk = wait_for_return(&disk)?;
-                ui::done(&format!("{id} is back", id = disk.id));
-                ui::point("Starting the write again");
-                unmount(&disk)?;
+                ui.show(
+                    "Disconnected",
+                    &[
+                        format!(
+                            "{} of {} written. Not bootable yet.",
+                            format_bytes(written),
+                            format_bytes(iso.size_bytes)
+                        ),
+                        format!(
+                            "Waiting {}s. Leave it plugged in.",
+                            RECONNECT_WAIT.as_secs()
+                        ),
+                    ],
+                )?;
+                disk = wait_for_return(ui, &disk)?;
+                ui.show(
+                    "Disconnected",
+                    &[format!("{} is back. Writing again.", disk.id)],
+                )?;
+                unmount(ui, &disk)?;
             }
             Err(WriteFailure::Gone { written }) => bail!(
-                "the USB disconnected again after {} of {}. It is not bootable. You: use a port on the Mac, not a hub, then run SuitBoot again.",
+                "the USB disconnected again after {} of {}. It is not bootable. Use a port on the Mac, not a hub, then run SuitBoot again.",
                 format_bytes(written),
                 format_bytes(iso.size_bytes)
             ),
@@ -181,7 +196,7 @@ fn write_image(selected: &Disk, iso: &IsoImage) -> Result<()> {
     }
 }
 
-fn wait_for_return(selected: &Disk) -> Result<Disk> {
+fn wait_for_return(ui: &mut Ui, selected: &Disk) -> Result<Disk> {
     let deadline = Instant::now() + RECONNECT_WAIT;
     let mut next_notice = Instant::now() + Duration::from_secs(5);
     loop {
@@ -190,24 +205,27 @@ fn wait_for_return(selected: &Disk) -> Result<Disk> {
         }
         if Instant::now() >= deadline {
             bail!(
-                "the {} USB did not come back. It is not bootable. You: unplug it, plug it back in, and run SuitBoot again.",
+                "the {} USB did not come back. It is not bootable. Unplug it, plug it back in, and run SuitBoot again.",
                 selected.media_name
             );
         }
         if Instant::now() >= next_notice {
             let left = deadline.saturating_duration_since(Instant::now()).as_secs();
-            ui::point(&format!(
-                "Still waiting for {} · {left}s · leave it plugged in",
-                selected.media_name
-            ));
+            let _ = ui.show(
+                "Disconnected",
+                &[format!(
+                    "Still waiting for {} · {left}s. Leave it plugged in.",
+                    selected.media_name
+                )],
+            );
             next_notice = Instant::now() + Duration::from_secs(5);
         }
         thread::sleep(Duration::from_secs(1));
     }
 }
 
-fn write_once(disk: &Disk, iso: &IsoImage) -> Result<(), WriteFailure> {
-    ensure_sudo(false)?;
+fn write_once(ui: &mut Ui, disk: &Disk, iso: &IsoImage) -> Result<(), WriteFailure> {
+    ensure_sudo(ui, false)?;
     let name = iso
         .path
         .file_name()
@@ -215,19 +233,28 @@ fn write_once(disk: &Disk, iso: &IsoImage) -> Result<(), WriteFailure> {
         .to_string_lossy()
         .to_string();
     if iso.size_bytes <= BOOT_HEAD {
-        ui::step("Write");
-        ui::point(&format!("{name}  ·  {}", format_bytes(iso.size_bytes)));
-        return stream_range(disk, iso, 0, iso.size_bytes, &[], "Writing");
+        ui.show(
+            "Write",
+            &[format!("{name}  ·  {}", format_bytes(iso.size_bytes))],
+        )?;
+        return stream_range(ui, disk, iso, 0, iso.size_bytes, &[], "Writing");
     }
 
-    ui::step("Clear");
-    ui::point("Wiping the old partition table");
-    ui::ignore_dialog();
+    ui.show("Clear", &["Wiping the old partition table".to_string()])?;
+    ui.set_action(&[
+        "If macOS says the disk is unreadable, click Ignore".to_string(),
+        "Not Eject. Not Initialize.".to_string(),
+    ])?;
     zero_head(disk)?;
-    ui::step("Write");
-    ui::point(&format!("{name}  ·  {}", format_bytes(iso.size_bytes)));
-    ui::point("Boot sector goes on last");
+    ui.show(
+        "Write",
+        &[
+            format!("{name}  ·  {}", format_bytes(iso.size_bytes)),
+            "Boot sector is written last".to_string(),
+        ],
+    )?;
     stream_range(
+        ui,
         disk,
         iso,
         BOOT_HEAD,
@@ -235,8 +262,11 @@ fn write_once(disk: &Disk, iso: &IsoImage) -> Result<(), WriteFailure> {
         &["seek=1"],
         "Writing",
     )?;
-    ui::step("Boot sector");
-    stream_range(disk, iso, 0, BOOT_HEAD, &[], "Boot sector")
+    ui.show(
+        "Boot sector",
+        &["Writing the start of the disk".to_string()],
+    )?;
+    stream_range(ui, disk, iso, 0, BOOT_HEAD, &[], "Boot sector")
 }
 
 fn zero_head(disk: &Disk) -> Result<(), WriteFailure> {
@@ -261,6 +291,7 @@ fn zero_head(disk: &Disk) -> Result<(), WriteFailure> {
 }
 
 fn stream_range(
+    ui: &mut Ui,
     disk: &Disk,
     iso: &IsoImage,
     skip: u64,
@@ -290,7 +321,7 @@ fn stream_range(
         thread::spawn(move || feed(&path, stdin, &progress, skip, len))
     };
 
-    let status = supervise(&mut child, &progress, len, label)?;
+    let status = supervise(ui, &mut child, &progress, len, label)?;
     let fed = feeder
         .join()
         .map_err(|_| anyhow!("the ISO reader thread panicked"))?;
@@ -386,6 +417,7 @@ fn padded_len(size: u64) -> u64 {
 /// Waits for `child` while showing progress. If no bytes move for [`STALL_TIMEOUT`],
 /// the child is terminated and an error returned, so a dead stick can't hang the app.
 fn supervise(
+    ui: &mut Ui,
     child: &mut Child,
     progress: &AtomicU64,
     total: u64,
@@ -396,18 +428,22 @@ fn supervise(
     let mut last_change = Instant::now();
     let mut last_render: Option<Instant> = None;
     loop {
+        if ui.ctrl_c() {
+            cmd::terminate(child);
+            bail!("{label} stopped");
+        }
         if let Some(status) = child
             .try_wait()
             .with_context(|| format!("failed to poll the {label} process"))?
         {
-            render(
+            show_progress(
+                ui,
                 label,
                 progress.load(Ordering::Relaxed),
                 total,
                 started.elapsed(),
                 Duration::ZERO,
-            );
-            eprintln!();
+            )?;
             return Ok(status);
         }
 
@@ -417,7 +453,6 @@ fn supervise(
             last_change = Instant::now();
         }
         if last_change.elapsed() >= STALL_TIMEOUT {
-            eprintln!();
             cmd::terminate(child);
             bail!(
                 "{label} stalled: nothing moved for {}s at {} of {}. The USB stick or port may be \
@@ -429,33 +464,42 @@ fn supervise(
         }
 
         if last_render.is_none_or(|at| at.elapsed() >= Duration::from_millis(500)) {
-            render(
+            show_progress(
+                ui,
                 label,
                 bytes,
                 total,
                 started.elapsed(),
                 last_change.elapsed(),
-            );
+            )?;
             last_render = Some(Instant::now());
         }
         thread::sleep(Duration::from_millis(100));
     }
 }
 
-fn render(label: &str, done: u64, total: u64, elapsed: Duration, idle: Duration) {
-    // Pad so a shorter update erases the tail of the previous one.
-    let mut line = format!(
-        "     ·  {label}  {} / {}  {}",
-        format_bytes(done),
-        format_bytes(total),
-        progress_detail(done, total, elapsed, idle)
-    );
-    let width = 100;
-    if line.chars().count() < width {
-        line.push_str(&" ".repeat(width - line.chars().count()));
-    }
-    eprint!("\r{line}");
-    let _ = io::stderr().flush();
+fn show_progress(
+    ui: &mut Ui,
+    label: &str,
+    done: u64,
+    total: u64,
+    elapsed: Duration,
+    idle: Duration,
+) -> Result<()> {
+    let ratio = if total == 0 {
+        1.0
+    } else {
+        (done.min(total) as f64) / (total as f64)
+    };
+    ui.set_progress(
+        ratio,
+        &format!(
+            "{label}  {} / {}  {}",
+            format_bytes(done),
+            format_bytes(total),
+            progress_detail(done, total, elapsed, idle)
+        ),
+    )
 }
 
 fn progress_detail(done: u64, total: u64, elapsed: Duration, idle: Duration) -> String {
@@ -482,24 +526,31 @@ fn progress_detail(done: u64, total: u64, elapsed: Duration, idle: Duration) -> 
     format!("({percent}%)  {}/s  {eta}{waiting}", format_bytes(rate))
 }
 
-fn flush() {
-    ui::step("Flush");
-    ui::point("Pushing cached writes onto the USB");
-    ui::point("The line stays still. It has not stalled");
+fn flush(ui: &mut Ui) -> Result<()> {
+    ui.clear_progress()?;
+    ui.show(
+        "Flush",
+        &[
+            "Pushing cached writes onto the USB".to_string(),
+            "This can sit still. It has not stalled.".to_string(),
+        ],
+    )?;
     if let Err(error) = cmd::run_ok("/bin/sync", &[], SYNC_TIMEOUT) {
-        ui::alert(&format!("Sync did not finish: {error:#}"));
+        ui.show("Flush", &[format!("Sync did not finish: {error:#}")])?;
     } else {
-        ui::done("Flushed");
+        ui.show("Flush", &["Flushed".to_string()])?;
     }
+    Ok(())
 }
 
-fn verify_image(disk: &Disk, iso: &IsoImage) -> Result<()> {
-    ensure_sudo(false)?;
+fn verify_image(ui: &mut Ui, disk: &Disk, iso: &IsoImage) -> Result<()> {
+    ensure_sudo(ui, false)?;
     let raw = disk.raw_node();
     let blocks = iso.size_bytes.div_ceil(CHUNK as u64);
-    ui::step("Verify");
-    ui::point("Reading the USB back");
-    ui::point("About as long as the write");
+    ui.show(
+        "Verify",
+        &["Reading the USB back. About as long as the write.".to_string()],
+    )?;
 
     let mut child = Command::new(SUDO)
         .args([
@@ -525,7 +576,7 @@ fn verify_image(disk: &Disk, iso: &IsoImage) -> Result<()> {
         thread::spawn(move || compare(&path, size, device, &progress))
     };
 
-    let status = supervise(&mut child, &progress, iso.size_bytes, "Verifying")?;
+    let status = supervise(ui, &mut child, &progress, iso.size_bytes, "Verifying")?;
     let result = checker
         .join()
         .map_err(|_| anyhow!("the verification thread panicked"))?;
@@ -537,7 +588,8 @@ fn verify_image(disk: &Disk, iso: &IsoImage) -> Result<()> {
     }
     match result {
         Ok(None) => {
-            ui::done("USB matches the ISO");
+            ui.clear_progress()?;
+            ui.show("Verify", &["USB matches the ISO".to_string()])?;
             Ok(())
         }
         Ok(Some(offset)) => bail!(
@@ -579,21 +631,25 @@ fn compare(
     Ok(mismatch)
 }
 
-fn eject(disk: &Disk) {
+fn eject(ui: &mut Ui, disk: &Disk) -> Result<()> {
     let node = disk.node();
-    ui::step("Eject");
-    ui::point(&node);
+    ui.clear_progress()?;
+    ui.show("Eject", std::slice::from_ref(&node))?;
     let result = cmd::retry(&format!("Ejecting {node}"), EJECT_ATTEMPTS, |_| {
         cmd::run_ok(DISKUTIL, &["eject", &node], DISKUTIL_TIMEOUT).map(|_| ())
     });
     if let Err(error) = result {
-        ui::point(&format!("warning: {error:#}"));
-        ui::alert("Written and verified");
-        ui::point("You: eject it from Finder before unplugging");
+        ui.show(
+            "Eject",
+            &[
+                format!("{error:#}"),
+                "Written and verified. Eject it from Finder before unplugging.".to_string(),
+            ],
+        )?;
     } else {
-        ui::done("Ejected");
-        ui::point("You: safe to unplug");
+        ui.show("Eject", &["Ejected".to_string()])?;
     }
+    Ok(())
 }
 
 #[cfg(test)]

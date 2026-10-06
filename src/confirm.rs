@@ -1,12 +1,19 @@
 use anyhow::{Result, bail};
-use dialoguer::{Input, theme::ColorfulTheme};
 
 use crate::disk::Disk;
 use crate::iso::IsoImage;
-use crate::ui;
+use crate::ui::Ui;
 use crate::util::format_bytes;
 
-pub fn confirm_erase(disk: &Disk, iso: &IsoImage) -> Result<()> {
+pub fn confirm_erase(ui: &mut Ui, disk: &Disk, iso: &IsoImage) -> Result<()> {
+    if iso.size_bytes > disk.size_bytes {
+        bail!(
+            "ISO ({}) is larger than the USB ({}). Use a bigger stick.",
+            format_bytes(iso.size_bytes),
+            format_bytes(disk.size_bytes)
+        );
+    }
+
     let volumes = if disk.volume_names.is_empty() {
         "no volumes".to_string()
     } else {
@@ -17,58 +24,52 @@ pub fn confirm_erase(disk: &Disk, iso: &IsoImage) -> Result<()> {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("iso");
-
-    ui::step("Erase");
-    ui::alert("This destroys the whole USB");
-    ui::point(&format!("{}  ·  {}", disk.id, disk.media_name));
-    ui::point(&format!("{}  ·  {volumes}", format_bytes(disk.size_bytes)));
-    ui::point(&format!("{iso_name}  ·  {}", format_bytes(iso.size_bytes)));
-    ui::point(iso.display_kind());
-
-    if iso.size_bytes > disk.size_bytes {
-        bail!(
-            "ISO ({}) is larger than the USB ({}). Use a bigger stick.",
-            format_bytes(iso.size_bytes),
-            format_bytes(disk.size_bytes)
-        );
-    }
+    let notes = vec![
+        format!("{}  ·  {}", disk.id, disk.media_name),
+        format!("{}  ·  {volumes}", format_bytes(disk.size_bytes)),
+        format!("{iso_name}  ·  {}", format_bytes(iso.size_bytes)),
+        iso.display_kind().to_string(),
+        "The whole USB is erased".to_string(),
+    ];
 
     if disk.is_large() {
-        ui::step("Large disk");
-        ui::alert("128 GB or bigger");
-        ui::point("This may be a backup drive");
-        ui::point("You: type ERASE");
-        let typed: String = Input::with_theme(&ColorfulTheme::default())
-            .with_prompt("Type ERASE to continue")
-            .interact_text()?;
-        if typed.trim() != "ERASE" {
-            bail!("aborted");
+        loop {
+            let typed = ui.prompt(
+                "Large disk",
+                &[
+                    notes[0].clone(),
+                    "128 GB or larger. This may be a backup drive.".to_string(),
+                ],
+                &["Type ERASE".to_string()],
+            )?;
+            match typed.as_deref() {
+                None => bail!("aborted"),
+                Some("ERASE") => break,
+                Some(_) => continue,
+            }
         }
     }
 
-    ui::point(&format!("You: type {}", disk.id));
-    ui::point("SuitBoot waits until you do");
-    let typed: String = Input::with_theme(&ColorfulTheme::default())
-        .with_prompt(format!("Type {} to erase it and write the ISO", disk.id))
-        .interact_text()?;
-    if typed.trim() != disk.id {
-        bail!("aborted (identifier did not match)");
+    loop {
+        let typed = ui.prompt("Erase", &notes, &[format!("Type {}", disk.id)])?;
+        match typed.as_deref() {
+            None => bail!("aborted"),
+            Some(value) if value == disk.id => return Ok(()),
+            Some(_) => continue,
+        }
     }
-    Ok(())
 }
 
-pub fn thinkpad_boot_notes() {
-    ui::step("ThinkPad");
-    ui::point("Unplug the USB and plug it into the laptop");
-    ui::point("Power on, tap F12");
-    ui::point("Fn+F12 on some models");
-    ui::point("Choose the USB entry");
-    ui::point("Missing? BIOS with F1");
-    ui::point("USB boot: on");
-    ui::point("Secure Boot: fine for Ubuntu and Fedora");
-    ui::point("Other distros: turn Secure Boot off");
-    ui::point("Old models: enable Legacy / CSM");
-    ui::point("Fast Boot: off");
-    ui::point("Prefer a USB-A port");
-    println!();
+pub fn thinkpad_notes() -> Vec<String> {
+    [
+        "Unplug the USB and plug it into the laptop",
+        "Power on and tap F12",
+        "Fn+F12 on some models",
+        "Choose the USB entry",
+        "Missing? BIOS with F1, USB boot on",
+        "Secure Boot is fine for Ubuntu and Fedora",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
 }
