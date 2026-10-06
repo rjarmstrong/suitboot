@@ -1,8 +1,10 @@
 # SuitBoot
 
-Interactive macOS tool that erases a USB stick and writes a Linux ISO so a ThinkPad can boot from it.
+The quick, easy way to make a boot disk on your Mac.
 
-Plug in a USB stick, run `suitboot`, and pick the stick and an ISO from Downloads. SuitBoot refuses internal disks, disk images, and the Mac’s boot disk. It then writes the image, reads it back, and ejects the stick.
+Plug in a USB stick, run `suitboot`, and pick an ISO from Downloads. SuitBoot writes it, checks it, and ejects it — ready for your ThinkPad to start from. No Disk Utility steps, and no guessing which drive is safe to erase.
+
+SuitBoot refuses internal disks, disk images, and the Mac’s own boot disk.
 
 macOS will open a dialog saying the disk is not readable. Click **Ignore**. Do not click Eject or Initialize.
 
