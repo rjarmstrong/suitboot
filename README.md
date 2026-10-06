@@ -1,11 +1,11 @@
-# SuitBoot
+<h1>SuitBoot</h1>
 
 <img width="290" height="299" alt="image" src="https://github.com/user-attachments/assets/b46cf117-aa26-41e9-a5fa-3fac2d4b9d45" />
 
 
-**The quick, easy way to make a boot disk on your Mac.**
+<h2>Quick, easy way to make a Linux boot disk on your Mac.</h2>
 
-Plug in a USB stick, run `suitboot`, pick an ISO. SuitBoot does the rest.
+Plug in a USB stick, run `suitboot`, pick an ISO from downloads. SuitBoot does the rest.
 
 ## What you get
 
