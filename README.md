@@ -1,6 +1,7 @@
 # SuitBoot
 
-<img width="300" height="300" alt="image" src="https://github.com/user-attachments/assets/ad20db90-5ae2-40ea-b4b2-0ee8674141ee" />
+<img width="300" height="300" alt="image" src="https://github.com/user-attachments/assets/23ea5028-9c3b-4aaa-82ea-509e11b3ef4d" />
+
 
 **The quick, easy way to make a boot disk on your Mac.**
 
