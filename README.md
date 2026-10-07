@@ -11,7 +11,7 @@ Plug in a USB stick, run:
 $ suitboot
 ```
 
-and pick a Linux ISO from Downloads. SuitBoot writes it ready to boot a ThinkPad.
+and pick a Linux ISO from Downloads. SuitBoot writes it ready to boot.
 
 ## What you get
 
@@ -28,8 +28,8 @@ macOS will say the disk is not readable.
 
 ## On the target machine
 
-- Plug-in USB
-- Power on and tap **F12**.
+- Plug in the USB.
+- Power on and open the boot menu.
 - Choose the USB.
 
 ## Build

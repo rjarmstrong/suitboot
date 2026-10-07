@@ -60,13 +60,13 @@ pub fn confirm_erase(ui: &mut Ui, disk: &Disk, iso: &IsoImage) -> Result<()> {
     }
 }
 
-pub fn thinkpad_notes() -> Vec<String> {
+pub fn boot_notes() -> Vec<String> {
     [
-        "Unplug the USB and plug it into the laptop",
-        "Power on and tap F12",
-        "Fn+F12 on some models",
+        "Unplug the USB and plug it into the computer",
+        "Power on and open the boot menu",
+        "Common keys are F12, F10, Esc, or Option",
         "Choose the USB entry",
-        "Missing? BIOS with F1, USB boot on",
+        "Missing? Turn on USB boot in the firmware settings",
         "Secure Boot is fine for Ubuntu and Fedora",
     ]
     .into_iter()

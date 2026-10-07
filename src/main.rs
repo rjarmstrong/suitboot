@@ -22,12 +22,12 @@ use crate::util::format_bytes;
 #[command(
     name = "suitboot",
     version,
-    about = "Erase a USB stick on this Mac and write a Linux ISO for ThinkPad startup.",
+    about = "Erase a USB stick on this Mac and write a Linux ISO.",
     long_about = "Run suitboot with no arguments. SuitBoot will:\n  \
         1. let you pick the target USB from a list\n  \
         2. let you pick an ISO from ~/Downloads\n  \
         3. erase that USB and write the ISO as a hybrid boot image\n\n\
-        Afterward, boot the ThinkPad with F12 and pick the USB."
+        Afterward, boot the computer from the USB."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -90,7 +90,7 @@ fn flash_flow() -> Result<()> {
     flash::erase_and_write(&mut ui, &disk, &iso)?;
 
     ui.clear_progress()?;
-    ui.show("Ready", &confirm::thinkpad_notes())?;
+    ui.show("Ready", &confirm::boot_notes())?;
     ui.set_action(&["Unplug the USB".to_string()])?;
     ui.wait_enter()?;
     Ok(())
