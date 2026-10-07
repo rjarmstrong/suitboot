@@ -31,3 +31,19 @@ macOS will say the disk is not readable.
 - Plug-in USB
 - Power on and tap **F12**.
 - Choose the USB.
+
+## Build
+
+SuitBoot builds on macOS with a current stable Rust toolchain.
+
+```sh
+cargo build --release
+```
+
+The binary is `target/release/suitboot`. Install it with a new signature. macOS rejects a binary that was copied on top of an older one.
+
+```sh
+sudo rm -f /usr/local/bin/suitboot
+sudo cp target/release/suitboot /usr/local/bin/suitboot
+sudo codesign --force --sign - /usr/local/bin/suitboot
+```
