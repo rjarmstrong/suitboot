@@ -13,6 +13,22 @@ $ suitboot
 
 and pick a Linux ISO from Downloads. SuitBoot writes it ready to boot.
 
+## Download
+
+The current release is **Apple silicon only**: [suitboot 0.0.1](https://github.com/rjarmstrong/suitboot/releases/tag/v0.0.1).
+
+```sh
+curl -LO https://github.com/rjarmstrong/suitboot/releases/download/v0.0.1/suitboot-aarch64-apple-darwin
+curl -LO https://github.com/rjarmstrong/suitboot/releases/download/v0.0.1/SHA256SUMS
+shasum -a 256 -c SHA256SUMS
+chmod +x suitboot-aarch64-apple-darwin
+xattr -d com.apple.quarantine suitboot-aarch64-apple-darwin
+sudo rm -f /usr/local/bin/suitboot
+sudo cp suitboot-aarch64-apple-darwin /usr/local/bin/suitboot
+```
+
+`shasum` checks the file against `SHA256SUMS`. macOS quarantines downloads, and this build is not notarized, so Gatekeeper blocks it until `xattr` clears that flag.
+
 ## What you get
 
 - **Fast setup.** Pick the stick and the ISO. No Disk Utility.
