@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::io::{self, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
@@ -47,44 +47,156 @@ pub fn erase_and_write(ui: &mut Ui, selected: &Disk, iso: &IsoImage) -> Result<(
         "If macOS says the disk is unreadable, click Ignore".to_string(),
         "Not Eject. Not Initialize.".to_string(),
     ])?;
-    ensure_sudo(ui, true)?;
+    let mut auth = Auth::default();
+    authenticate(ui, &mut auth)?;
     let disk = confirm_same_device(ui, selected)?;
     unmount(ui, &disk)?;
-    write_image(ui, &disk, iso)?;
+    write_image(ui, &mut auth, &disk, iso)?;
     flush(ui)?;
-    verify_image(ui, &disk, iso)?;
+    verify_image(ui, &mut auth, &disk, iso)?;
     eject(ui, &disk)?;
     ui.clear_action()?;
     Ok(())
 }
 
-/// Asks for the admin password up front so a bad password can't be mistaken for a
-/// failed write, and so the later non-interactive `sudo -n` calls can't block on a prompt.
-fn ensure_sudo(ui: &mut Ui, announce: bool) -> Result<()> {
-    let cached = cmd::run(SUDO, &["-n", "-v"], SUDO_CHECK_TIMEOUT)
-        .map(|output| output.status.success())
-        .unwrap_or(false);
-    if cached {
-        if announce {
-            ui.show("Password", &["macOS already granted access".to_string()])?;
-        }
+/// Password for privileged disk commands.
+///
+/// An empty password means `sudo -n` already works. Otherwise every `dd` gets the
+/// password on stdin via `sudo -S`. A normal `sudo -v` ticket does not cover those
+/// later `sudo -n` calls, which then fail with "a password is required".
+#[derive(Default)]
+struct Auth {
+    password: String,
+    force_prompt: bool,
+}
+
+impl Drop for Auth {
+    fn drop(&mut self) {
+        self.password.clear();
+    }
+}
+
+impl Auth {
+    fn needs_password(&self) -> bool {
+        !self.password.is_empty()
+    }
+}
+
+fn sudo_prefix(auth: &Auth) -> Vec<String> {
+    if auth.needs_password() {
+        ["-S", "-k", "-p", ""]
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    } else {
+        vec!["-n".to_string()]
+    }
+}
+
+fn authenticate(ui: &mut Ui, auth: &mut Auth) -> Result<()> {
+    if auth.needs_password() || (!auth.force_prompt && sudo_cached()) {
         return Ok(());
     }
-    ui.show("Password", &["Needed to write the USB".to_string()])?;
-    let status = ui.suspend(|| {
-        println!();
-        println!("  Password required to write the USB");
-        println!();
-        Command::new(SUDO).args(["-v", "-p", "Password: "]).status()
-    });
-    let status = status.context("failed to run sudo")?;
-    if !status.success() {
-        bail!(
-            "the password was not accepted, or this account isn't an admin. Nothing was written."
-        );
+    let mut action = vec!["Type the Mac password".to_string()];
+    loop {
+        let Some(mut password) = ui.read_secret(&action)? else {
+            bail!("aborted");
+        };
+        let accepted = if password.is_empty() {
+            false
+        } else {
+            let result = password_accepted(&password);
+            if result.as_ref().ok() == Some(&true) {
+                auth.password = std::mem::take(&mut password);
+                auth.force_prompt = false;
+            }
+            password.clear();
+            result?
+        };
+        if accepted {
+            return Ok(());
+        }
+        action = vec![
+            "Type the Mac password".to_string(),
+            "Not accepted".to_string(),
+        ];
     }
-    ui.show("Password", &["Accepted".to_string()])?;
+}
+
+fn sudo_cached() -> bool {
+    cmd::run(SUDO, &["-n", "-v"], SUDO_CHECK_TIMEOUT)
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+/// Checks the password without using the credential cache.
+fn password_accepted(password: &str) -> Result<bool> {
+    let output = sudo_output(
+        &Auth {
+            password: password.to_string(),
+            force_prompt: false,
+        },
+        &["-v".to_string()],
+        Duration::from_secs(20),
+    )?;
+    if output.status.success() {
+        return Ok(true);
+    }
+    let err = String::from_utf8_lossy(&output.stderr).to_string();
+    let lower = err.to_lowercase();
+    if lower.contains("not allowed")
+        || lower.contains("not in the sudoers")
+        || lower.contains("a terminal is required")
+        || lower.contains("no tty")
+    {
+        bail!("{err} Nothing was written.");
+    }
+    Ok(false)
+}
+
+fn sudo_output(auth: &Auth, args: &[String], timeout: Duration) -> Result<Output> {
+    let mut child = start_sudo(auth, args, Stdio::piped(), Stdio::piped())?;
+    let stdout = cmd::drain(child.stdout.take());
+    let stderr = cmd::drain(child.stderr.take());
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = write_password(auth, &mut stdin);
+    }
+    let status = match cmd::wait_timeout(&mut child, timeout)? {
+        Some(status) => status,
+        None => {
+            cmd::terminate(&mut child);
+            bail!("sudo did not finish. Nothing was written.");
+        }
+    };
+    Ok(Output {
+        status,
+        stdout: cmd::collect(stdout),
+        stderr: cmd::collect(stderr),
+    })
+}
+
+fn start_sudo(auth: &Auth, args: &[String], stdin: Stdio, stdout: Stdio) -> Result<Child> {
+    Command::new(SUDO)
+        .args(sudo_prefix(auth))
+        .args(args)
+        .stdin(stdin)
+        .stdout(stdout)
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("failed to start sudo")
+}
+
+fn write_password(auth: &Auth, stdin: &mut impl Write) -> io::Result<()> {
+    if auth.needs_password() {
+        stdin.write_all(auth.password.as_bytes())?;
+        stdin.write_all(b"\n")?;
+        stdin.flush()?;
+    }
     Ok(())
+}
+
+fn needs_password_again(error: &anyhow::Error) -> bool {
+    format!("{error:#}").contains("a password is required")
 }
 
 fn confirm_same_device(ui: &mut Ui, selected: &Disk) -> Result<Disk> {
@@ -142,11 +254,11 @@ impl From<anyhow::Error> for WriteFailure {
     }
 }
 
-fn write_image(ui: &mut Ui, selected: &Disk, iso: &IsoImage) -> Result<()> {
+fn write_image(ui: &mut Ui, auth: &mut Auth, selected: &Disk, iso: &IsoImage) -> Result<()> {
     let mut disk = selected.clone();
     let mut attempt = 1;
     loop {
-        match write_once(ui, &disk, iso) {
+        match write_once(ui, auth, &disk, iso) {
             Ok(()) => return Ok(()),
             Err(WriteFailure::Busy) if attempt < WRITE_ATTEMPTS => {
                 attempt += 1;
@@ -224,8 +336,31 @@ fn wait_for_return(ui: &mut Ui, selected: &Disk) -> Result<Disk> {
     }
 }
 
-fn write_once(ui: &mut Ui, disk: &Disk, iso: &IsoImage) -> Result<(), WriteFailure> {
-    ensure_sudo(ui, false)?;
+fn write_once(
+    ui: &mut Ui,
+    auth: &mut Auth,
+    disk: &Disk,
+    iso: &IsoImage,
+) -> Result<(), WriteFailure> {
+    authenticate(ui, auth)?;
+    match write_partitions(ui, auth, disk, iso) {
+        Err(WriteFailure::Fatal(error))
+            if auth.password.is_empty() && needs_password_again(&error) =>
+        {
+            auth.force_prompt = true;
+            authenticate(ui, auth)?;
+            write_partitions(ui, auth, disk, iso)
+        }
+        result => result,
+    }
+}
+
+fn write_partitions(
+    ui: &mut Ui,
+    auth: &Auth,
+    disk: &Disk,
+    iso: &IsoImage,
+) -> Result<(), WriteFailure> {
     let name = iso
         .path
         .file_name()
@@ -237,7 +372,18 @@ fn write_once(ui: &mut Ui, disk: &Disk, iso: &IsoImage) -> Result<(), WriteFailu
             "Write",
             &[format!("{name}  ·  {}", format_bytes(iso.size_bytes))],
         )?;
-        return stream_range(ui, disk, iso, 0, iso.size_bytes, &[], "Writing");
+        return stream_range(
+            ui,
+            auth,
+            disk,
+            iso,
+            Transfer {
+                skip: 0,
+                len: iso.size_bytes,
+                options: &[],
+                label: "Writing",
+            },
+        );
     }
 
     ui.show("Clear", &["Wiping the old partition table".to_string()])?;
@@ -245,7 +391,7 @@ fn write_once(ui: &mut Ui, disk: &Disk, iso: &IsoImage) -> Result<(), WriteFailu
         "If macOS says the disk is unreadable, click Ignore".to_string(),
         "Not Eject. Not Initialize.".to_string(),
     ])?;
-    zero_head(disk)?;
+    zero_head(auth, disk)?;
     ui.show(
         "Write",
         &[
@@ -255,34 +401,51 @@ fn write_once(ui: &mut Ui, disk: &Disk, iso: &IsoImage) -> Result<(), WriteFailu
     )?;
     stream_range(
         ui,
+        auth,
         disk,
         iso,
-        BOOT_HEAD,
-        iso.size_bytes - BOOT_HEAD,
-        &["seek=1"],
-        "Writing",
+        Transfer {
+            skip: BOOT_HEAD,
+            len: iso.size_bytes - BOOT_HEAD,
+            options: &["seek=1"],
+            label: "Writing",
+        },
     )?;
     ui.show(
         "Boot sector",
         &["Writing the start of the disk".to_string()],
     )?;
-    stream_range(ui, disk, iso, 0, BOOT_HEAD, &[], "Boot sector")
+    stream_range(
+        ui,
+        auth,
+        disk,
+        iso,
+        Transfer {
+            skip: 0,
+            len: BOOT_HEAD,
+            options: &[],
+            label: "Boot sector",
+        },
+    )
 }
 
-fn zero_head(disk: &Disk) -> Result<(), WriteFailure> {
+struct Transfer<'a> {
+    skip: u64,
+    len: u64,
+    options: &'a [&'a str],
+    label: &'a str,
+}
+
+fn zero_head(auth: &Auth, disk: &Disk) -> Result<(), WriteFailure> {
     let raw = disk.raw_node();
-    let output = cmd::run(
-        SUDO,
-        &[
-            "-n",
-            DD,
-            "if=/dev/zero",
-            &format!("of={raw}"),
-            "bs=1m",
-            "count=1",
-        ],
-        Duration::from_secs(60),
-    )?;
+    let args = [
+        DD.to_string(),
+        "if=/dev/zero".to_string(),
+        format!("of={raw}"),
+        "bs=1m".to_string(),
+        "count=1".to_string(),
+    ];
+    let output = sudo_output(auth, &args, Duration::from_secs(60))?;
     if output.status.success() {
         Ok(())
     } else {
@@ -292,27 +455,28 @@ fn zero_head(disk: &Disk) -> Result<(), WriteFailure> {
 
 fn stream_range(
     ui: &mut Ui,
+    auth: &Auth,
     disk: &Disk,
     iso: &IsoImage,
-    skip: u64,
-    len: u64,
-    dd_options: &[&str],
-    label: &str,
+    transfer: Transfer<'_>,
 ) -> Result<(), WriteFailure> {
+    let Transfer {
+        skip,
+        len,
+        options,
+        label,
+    } = transfer;
     let raw = disk.raw_node();
     let of = format!("of={raw}");
-    let mut args = vec!["-n", DD, of.as_str(), "bs=1m"];
-    args.extend_from_slice(dd_options);
+    let mut args = vec![DD.to_string(), of, "bs=1m".to_string()];
+    args.extend(options.iter().map(|option| (*option).to_string()));
 
-    let mut child = Command::new(SUDO)
-        .args(&args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("failed to start dd")?;
+    let mut child =
+        start_sudo(auth, &args, Stdio::piped(), Stdio::null()).map_err(WriteFailure::Fatal)?;
     let stderr = cmd::drain(child.stderr.take());
-    let stdin = child.stdin.take().context("dd stdin was not captured")?;
+    let mut stdin = child.stdin.take().context("dd stdin was not captured")?;
+    write_password(auth, &mut stdin).map_err(|error| anyhow!(error))?;
+    let stdin = stdin;
 
     let progress = Arc::new(AtomicU64::new(0));
     let feeder = {
@@ -543,8 +707,19 @@ fn flush(ui: &mut Ui) -> Result<()> {
     Ok(())
 }
 
-fn verify_image(ui: &mut Ui, disk: &Disk, iso: &IsoImage) -> Result<()> {
-    ensure_sudo(ui, false)?;
+fn verify_image(ui: &mut Ui, auth: &mut Auth, disk: &Disk, iso: &IsoImage) -> Result<()> {
+    authenticate(ui, auth)?;
+    match verify_once(ui, auth, disk, iso) {
+        Err(error) if auth.password.is_empty() && needs_password_again(&error) => {
+            auth.force_prompt = true;
+            authenticate(ui, auth)?;
+            verify_once(ui, auth, disk, iso)
+        }
+        result => result,
+    }
+}
+
+fn verify_once(ui: &mut Ui, auth: &Auth, disk: &Disk, iso: &IsoImage) -> Result<()> {
     let raw = disk.raw_node();
     let blocks = iso.size_bytes.div_ceil(CHUNK as u64);
     ui.show(
@@ -552,20 +727,18 @@ fn verify_image(ui: &mut Ui, disk: &Disk, iso: &IsoImage) -> Result<()> {
         &["Reading the USB back. About as long as the write.".to_string()],
     )?;
 
-    let mut child = Command::new(SUDO)
-        .args([
-            "-n",
-            DD,
-            &format!("if={raw}"),
-            "bs=1m",
-            &format!("count={blocks}"),
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+    let args = vec![
+        DD.to_string(),
+        format!("if={raw}"),
+        "bs=1m".to_string(),
+        format!("count={blocks}"),
+    ];
+    let mut child = start_sudo(auth, &args, Stdio::piped(), Stdio::piped())
         .context("failed to start dd for verification")?;
     let stderr = cmd::drain(child.stderr.take());
+    if let Some(mut stdin) = child.stdin.take() {
+        write_password(auth, &mut stdin)?;
+    }
     let device = child.stdout.take().context("dd stdout was not captured")?;
 
     let progress = Arc::new(AtomicU64::new(0));
@@ -669,6 +842,26 @@ mod tests {
 
     fn pattern(len: usize) -> Vec<u8> {
         (0..len).map(|i| (i % 251) as u8).collect()
+    }
+
+    #[test]
+    fn sudo_sends_the_typed_password_instead_of_using_the_cache() {
+        let cached = Auth::default();
+        assert_eq!(sudo_prefix(&cached), vec!["-n".to_string()]);
+
+        let typed = Auth {
+            password: "secret".to_string(),
+            force_prompt: false,
+        };
+        assert_eq!(
+            sudo_prefix(&typed),
+            vec![
+                "-S".to_string(),
+                "-k".to_string(),
+                "-p".to_string(),
+                String::new()
+            ]
+        );
     }
 
     #[test]

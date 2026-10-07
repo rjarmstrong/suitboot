@@ -25,6 +25,7 @@ pub struct Ui {
     selected: usize,
     input: String,
     footer: String,
+    secret: bool,
     drawn: bool,
 }
 
@@ -47,6 +48,7 @@ impl Ui {
             selected: 0,
             input: String::new(),
             footer: String::new(),
+            secret: false,
             drawn: false,
         };
         Ok(ui)
@@ -154,7 +156,33 @@ impl Ui {
         self.choices.clear();
         self.progress = None;
         self.input.clear();
+        self.secret = false;
         self.footer = "type, then enter     esc  cancel".to_string();
+        self.read_line(true)
+    }
+
+    /// Masked input on the current task. Restores the previous action when it returns.
+    pub fn read_secret(&mut self, action: &[String]) -> Result<Option<String>> {
+        let previous_action = std::mem::replace(&mut self.action, action.to_vec());
+        let previous_footer = std::mem::replace(
+            &mut self.footer,
+            "type, then enter     esc  cancel".to_string(),
+        );
+        self.choices.clear();
+        self.input.clear();
+        self.secret = true;
+        let result = self.read_line(false);
+        self.secret = false;
+        self.input.clear();
+        self.action = previous_action;
+        self.footer = previous_footer;
+        if self.active {
+            let _ = self.draw();
+        }
+        result
+    }
+
+    fn read_line(&mut self, trim: bool) -> Result<Option<String>> {
         self.draw()?;
         loop {
             if !event::poll(Duration::from_millis(200)).context("terminal input failed")? {
@@ -169,7 +197,11 @@ impl Ui {
             }
             match key.code {
                 KeyCode::Enter => {
-                    let value = self.input.trim().to_string();
+                    let value = if trim {
+                        self.input.trim().to_string()
+                    } else {
+                        std::mem::take(&mut self.input)
+                    };
                     self.input.clear();
                     return Ok(Some(value));
                 }
@@ -177,8 +209,12 @@ impl Ui {
                     self.input.pop();
                     self.draw()?;
                 }
-                KeyCode::Esc => return Ok(None),
+                KeyCode::Esc => {
+                    self.input.clear();
+                    return Ok(None);
+                }
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.input.clear();
                     return Ok(None);
                 }
                 KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -228,23 +264,6 @@ impl Ui {
         hit
     }
 
-    /// Leaves the screen so a normal prompt (the macOS password) can run, then redraws.
-    pub fn suspend<T>(&mut self, f: impl FnOnce() -> T) -> T {
-        self.active = false;
-        ratatui::restore();
-        let value = f();
-        match ratatui::try_init() {
-            Ok(terminal) => {
-                self.terminal = terminal;
-                self.active = true;
-                self.drawn = false;
-                let _ = self.draw();
-            }
-            Err(_) => self.active = false,
-        }
-        value
-    }
-
     fn draw(&mut self) -> Result<()> {
         if !self.drawn {
             self.terminal
@@ -259,7 +278,11 @@ impl Ui {
             action: self.action.clone(),
             choices: self.choices.clone(),
             selected: self.selected,
-            input: self.input.clone(),
+            input: if self.secret {
+                "•".repeat(self.input.chars().count())
+            } else {
+                self.input.clone()
+            },
             footer: self.footer.clone(),
         };
         self.terminal
