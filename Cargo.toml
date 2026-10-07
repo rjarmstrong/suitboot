@@ -1,6 +1,6 @@
 [package]
 name = "suitboot"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2024"
 description = "Erase a USB stick on macOS and write a Linux ISO for ThinkPad boot"
 license = "MIT"

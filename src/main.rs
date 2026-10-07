@@ -21,6 +21,7 @@ use crate::util::format_bytes;
 #[derive(Parser)]
 #[command(
     name = "suitboot",
+    version,
     about = "Erase a USB stick on this Mac and write a Linux ISO for ThinkPad startup.",
     long_about = "Run suitboot with no arguments. SuitBoot will:\n  \
         1. let you pick the target USB from a list\n  \
