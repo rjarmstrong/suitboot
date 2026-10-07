@@ -17,7 +17,7 @@ and pick a Linux ISO from Downloads. SuitBoot writes it ready to boot.
 
 Grab the Apple silicon build from the [0.0.1 release](https://github.com/rjarmstrong/suitboot/releases/tag/v0.0.1) and move it to `/usr/local/bin/suitboot`.
 
-macOS may refuse the first open, because this build is not notarized. Right-click the file and choose Open. `SHA256SUMS` on that page is there if you want to check the download.
+macOS may refuse to run it, because this build is not notarized. Clear that with `xattr -d com.apple.quarantine /usr/local/bin/suitboot`. `SHA256SUMS` on the release page is there if you want to check the download.
 
 ## What you get
 
